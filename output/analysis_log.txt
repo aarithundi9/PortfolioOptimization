@@ -1,0 +1,595 @@
+
+##############################################################################
+#  MARKOWITZ MEAN-VARIANCE PORTFOLIO OPTIMIZATION
+#  10 assets | 3-year lookback | risk-free 4.30%
+##############################################################################
+
+==============================================================================
+  STEP 1  --  DATA ACQUISITION
+==============================================================================
+  Downloading 10 tickers from 2023-07-11 to 2026-07-20 (auto-adjusted / total return)...
+
+  Available history per asset (within the requested window):
+
+    Ticker  First date        Obs    Years   Assessment
+    --------------------------------------   --------------------------
+    SPY     2023-07-18        753     2.99   ok
+    VOOG    2023-07-18        753     2.99   ok
+    SCHD    2023-07-18        753     2.99   ok
+    VXUS    2023-07-18        753     2.99   ok
+    GLD     2023-07-18        753     2.99   ok
+    GOOGL   2023-07-18        753     2.99   ok
+    NVDA    2023-07-18        753     2.99   ok
+    SMH     2023-07-18        753     2.99   ok
+    WQTM    2025-10-09        193     0.77   VERY SHORT -- unreliable
+    TSLY    2023-07-18        753     2.99   ok
+
+  !! UNEQUAL HISTORY DETECTED
+     Requested window ......... 3.0 years
+     Oldest asset starts ...... 2023-07-18 (3.00 years available)
+     Common window starts ..... 2025-10-09 (0.77 years) -- limited by WQTM
+     Aligning all assets would DISCARD 2.23 years of data on the others.
+
+  POLICY = 'drop_young': dropping WQTM (< 2.0 years of history).
+     Tradeoff: the covariance matrix for the remaining assets is now
+     estimated over a much longer window and is far more stable, but
+     these holdings are invisible to the optimizer even though you
+     own them. Your 'current portfolio' stats below are computed on
+     the surviving assets, renormalized to sum to 1.
+
+  Final estimation window: 2023-07-18 -> 2026-07-17
+  753 trading days x 9 assets (2.99 years)
+
+--- Why auto-adjusted prices, and why it matters here -------------------------
+Every price above is an ADJUSTED close: dividends and distributions are
+reinvested back into the series, so what we are measuring is TOTAL return, not
+price return.
+
+This is not a technicality for this particular portfolio. TSLY is an option-
+income fund that pays out most of its economics as distributions -- its raw
+share price drifts DOWN by construction. SCHD is a dividend fund. Using raw
+prices would have told the optimizer that these assets lose money, which is
+false, and the resulting 'optimal' portfolio would have been garbage in a way
+that is completely invisible from the output.
+
+
+==============================================================================
+  STEP 2  --  RETURNS, EXPECTED RETURNS, AND THE COVARIANCE MATRIX
+==============================================================================
+
+--- The two objects that ARE the Markowitz model ------------------------------
+We just reduced 6,768 daily return observations down to exactly two things:
+
+    mu     -- expected annual return per asset      (9-element vector)
+    Sigma  -- annualized covariance matrix          (9x9 matrix)
+
+Formulas:
+
+    mu_i      = mean(daily return_i) x 252
+    Sigma_ij  = cov(daily_i, daily_j) x 252
+    sigma_i   = sqrt(Sigma_ii)                    <- annualized volatility
+
+That is the ENTIRE input. Markowitz needs nothing else -- not price levels,
+not fundamentals, not your holding period. Everything the model can ever tell
+you is already contained in these two objects, which is both the source of its
+elegance and the source of its fragility: if mu is wrong, the answer is wrong,
+and there is no other information in the system to catch the error.
+
+Note the asymmetry in how well we know these. Sigma is estimated from the
+SPREAD of returns, and volatility is quite stable over time. mu is estimated
+from the AVERAGE of returns, and averages of noisy series converge painfully
+slowly -- with 3 years of data the standard error on an annual mean return is
+roughly sigma/sqrt(3), which for a 30%-vol asset is about +/- 17 percentage
+points a year. That is not a typo.
+
+
+  Per-asset annualized moments:
+
+          Ann. return Ann. volatility Sharpe (solo)
+    SMH        48.79%          36.33%         1.225
+    NVDA       59.75%          46.99%         1.180
+    GOOGL      39.33%          30.02%         1.167
+    GLD        25.49%          20.66%         1.025
+    VOOG       23.37%          19.41%         0.983
+    SPY        18.93%          15.31%         0.956
+    VXUS       16.61%          15.29%         0.805
+    SCHD       14.33%          13.13%         0.764
+    TSLY       13.43%          45.32%         0.201
+
+==============================================================================
+  STEP 3  --  VISUALIZING THE COVARIANCE STRUCTURE
+==============================================================================
+  [saved] output\01_price_history.png  -- context: how each holding actually performed
+  [saved] output\02_correlation_heatmap.png
+  [saved] output\03_covariance_heatmap.png
+
+--- How to read the correlation heatmap ---------------------------------------
+The diagonal is 1.0 by definition (everything is perfectly correlated with
+itself). Everything interesting is off-diagonal.
+
+Your most correlated pairs -- the REDUNDANT ones:
+
+    SPY    / VOOG      0.96
+    VOOG   / SMH       0.86
+    SPY    / SMH       0.81
+    NVDA   / SMH       0.80
+
+Your least correlated pairs -- the ones that actually DIVERSIFY:
+
+    SCHD   / NVDA      0.13
+    SCHD   / GLD       0.11
+    GLD    / NVDA      0.09
+    GLD    / TSLY      0.08
+
+Most independent holding overall: GLD (average correlation 0.17 with
+everything else). Most redundant holding overall: SPY (average correlation
+0.65).
+
+NOTICE THE EMPTY HALF OF THE COLOR SCALE. The heatmap is scaled from -1 (blue)
+through 0 (neutral) to +1 (red), but the lowest correlation anywhere in your
+portfolio is 0.08. Not one pair is negatively correlated. That means you own
+no true HEDGE -- nothing here reliably rises when the rest falls. Your
+diversification comes entirely from assets that move WEAKLY together (GLD at
+0.17 being the best of them), never from assets that move OPPOSITELY. That is
+normal for a long-only equity-plus-gold portfolio, but it is worth seeing
+explicitly: 'diversified' here means 'damped', not 'offset'.
+
+WHY THIS, AND NOT VOLATILITY, IS THE CENTER OF THE THEORY:
+
+A common intuition is that a portfolio's risk comes from how volatile its
+holdings are. That is only half true. Recall:
+
+    Var(portfolio) = sum_i w_i^2 sigma_i^2
+                   + sum_{i != j} w_i w_j rho_ij sigma_i sigma_j
+
+With 9 assets there are 9 variance terms and 72 covariance terms. The
+covariance terms dominate. So a portfolio of many volatile-but-unrelated
+assets can be far calmer than a portfolio of a few mild-but-identical ones.
+Volatility is a property of an asset; RISK is a property of an asset's
+relationship to your other assets.
+
+This is also why adding a 'safe' asset that is highly correlated with what you
+already own does almost nothing for you, while adding a volatile asset that
+moves independently can genuinely reduce total portfolio risk.
+
+
+==============================================================================
+  STEP 3b  --  YOUR CURRENT PORTFOLIO
+==============================================================================
+
+    Ticker      Shares      Price        Value    Weight
+    ----------------------------------------------------
+    SPY         0.9500     743.29       706.13    25.61%
+    SMH         1.1300     556.53       628.88    22.81%
+    VOOG        4.4000      80.75       355.30    12.89%
+    VXUS        3.0000      83.37       250.11     9.07%
+    TSLY        8.6600      25.73       222.82     8.08%
+    GLD         0.5700     368.41       209.99     7.62%
+    GOOGL       0.5800     346.77       201.13     7.29%
+    NVDA        0.7400     202.81       150.08     5.44%
+    SCHD        1.0000      32.91        32.91     1.19%
+    ----------------------------------------------------
+    TOTAL                             2,757.35   100.00%
+
+  !! NOTE: WQTM (2.2% of your actual portfolio value) is excluded from the model because of
+     the HISTORY_POLICY setting. The weights above are renormalized
+     over the remaining assets, so every risk number below describes
+     98% of your real portfolio.
+
+==============================================================================
+  STEP 4  --  MONTE CARLO: 50,000 RANDOM PORTFOLIOS
+==============================================================================
+  [saved] output\04_monte_carlo.png  -- the feasible set; note its upper-left edge
+
+--- What the random cloud is telling you --------------------------------------
+We generated 50,000 random long-only, fully-invested portfolios by sampling
+weights from a Dirichlet distribution (which guarantees w_i >= 0 and sum(w) =
+1 by construction), then evaluated each one:
+
+    R_p     = w' mu
+    sigma_p = sqrt(w' Sigma w)
+    Sharpe  = (R_p - r_f) / sigma_p        with r_f = 4.30%
+
+Best random portfolio found: Sharpe 1.641 (29.75% return, 15.51% volatility).
+Worst: Sharpe 0.201.
+
+Two things to notice in 04_monte_carlo.png:
+
+1. The cloud has a hard UPPER-LEFT BOUNDARY. Random mixing cannot get
+   you past it. That boundary is the efficient frontier -- it exists as
+   a real feature of the data, and Step 5 just computes it precisely
+   instead of stumbling onto it.
+
+2. The cloud is a solid region, not a line. Every point inside it is a
+   portfolio you could actually hold, and every one of them is
+   INEFFICIENT: there is a point directly above it (more return, same
+   risk) and a point directly to its left (same return, less risk).
+
+On the risk-free rate: r_f sets the origin of the reward axis. Sharpe measures
+excess return per unit of risk, so it is the SLOPE of the line from (0, r_f)
+to a portfolio's point. Maximizing Sharpe = finding the steepest such line =
+finding where a line from r_f is TANGENT to the frontier. That is why the max-
+Sharpe portfolio is also called the tangency portfolio, and why changing r_f
+moves it along the frontier.
+
+
+==============================================================================
+  STEP 5  --  FORMAL OPTIMIZATION AND THE EFFICIENT FRONTIER
+==============================================================================
+  Solving for the global minimum variance portfolio...
+  Solving for the maximum Sharpe (tangency) portfolio...
+  Tracing the efficient frontier (80 target returns)...
+  Tracing the constrained frontier (max 25% per asset)...
+  [saved] output\05_efficient_frontier.png  -- THE MAIN CHART -- read this one first
+
+--- The efficient frontier, and what each solve actually asked ----------------
+Three separate optimization problems were solved, all with the same two
+constraints (long-only: w_i >= 0; fully invested: sum(w) = 1):
+
+    GLOBAL MINIMUM VARIANCE
+        minimize   w' Sigma w
+    -> the single least-volatile portfolio obtainable from these assets.
+       Notice mu does not appear. This portfolio has no opinion about
+       returns at all, which makes it the most statistically robust
+       thing in this entire file.
+
+    MAXIMUM SHARPE (tangency)
+        maximize   (w' mu - r_f) / sqrt(w' Sigma w)
+    -> the best risk-adjusted mix. Leans heavily on mu, and therefore
+       inherits all of mu's estimation error.
+
+    THE FRONTIER ITSELF
+        for each target return R*:
+            minimize   w' Sigma w   subject to   w' mu = R*
+    -> sweeping R* traces the curve. The portion above the minimum
+       variance point is 'efficient'; the portion below it is dominated
+       and no one should hold it.
+
+Results over this window:
+
+    Min variance ..... return  18.17%   vol  11.39%   Sharpe  1.218
+    Max Sharpe ....... return  30.07%   vol  15.25%   Sharpe  1.690
+    Equal weight ..... return  28.89%   vol  19.79%   Sharpe  1.243
+    YOUR PORTFOLIO ... return  29.81%   vol  21.21%   Sharpe  1.203
+
+THE CAPITAL MARKET LINE is the straight line from (0, r_f) through the
+tangency portfolio. It represents portfolios built by mixing the tangency
+portfolio with cash: points to its left are partly in T-bills, points beyond
+it are leveraged. Its slope is exactly the tangency Sharpe ratio (1.690).
+Because it is a straight line lying above the curved frontier everywhere
+except the tangency point, Tobin's separation theorem follows: if you can
+borrow and lend at r_f, every investor should hold the SAME risky portfolio
+(the tangency one) and adjust risk purely by how much cash they mix in.
+
+Now look at where YOUR portfolio's star sits relative to the black curve. The
+vertical gap is return forgone at your current risk. The horizontal gap is
+risk taken without compensation.
+
+
+  Optimal weight vectors:
+
+           Current (yours)  Equal weight  Min variance  Max Sharpe
+    SPY             25.61%        11.11%        12.96%       0.00%
+    VOOG            12.89%        11.11%         0.00%       0.00%
+    SCHD             1.19%        11.11%        59.25%      29.67%
+    VXUS             9.07%        11.11%         1.88%       0.00%
+    GLD              7.62%        11.11%        23.69%      35.66%
+    GOOGL            7.29%        11.11%         2.22%      19.51%
+    NVDA             5.44%        11.11%         0.00%      15.16%
+    SMH             22.81%        11.11%         0.00%       0.00%
+    TSLY             8.08%        11.11%         0.00%       0.00%
+  [saved] output\06_weights_comparison.png  -- how the optimizer would reshape your portfolio
+
+==============================================================================
+  STEP 6  --  DIVERSIFICATION AND RISK CONTRIBUTION
+==============================================================================
+
+  Comparison of all four portfolios:
+
+                    Annual return Annual volatility Sharpe ratio Diversification ratio Effective N assets Max weight
+    Current (yours)        29.81%            21.21%        1.203                  1.24                6.1      25.6%
+    Equal weight           28.89%            19.79%        1.243                  1.36                9.0      11.1%
+    Min variance           18.17%            11.39%        1.218                  1.37                2.4      59.3%
+    Max Sharpe             30.07%            15.25%        1.690                  1.59                3.6      35.7%
+
+  Risk decomposition of YOUR portfolio:
+
+             Weight Marginal risk Risk contribution % of total risk Risk minus weight
+    SMH      22.81%        0.3395            0.0774          36.50%            13.70%
+    SPY      25.61%        0.1416            0.0363          17.09%            -8.52%
+    TSLY      8.08%        0.3062            0.0247          11.66%             3.58%
+    VOOG     12.89%        0.1864            0.0240          11.32%            -1.56%
+    NVDA      5.44%        0.3739            0.0204           9.59%             4.15%
+    GOOGL     7.29%        0.1868            0.0136           6.42%            -0.87%
+    VXUS      9.07%        0.1187            0.0108           5.08%            -3.99%
+    GLD       7.62%        0.0557            0.0042           2.00%            -5.62%
+    SCHD      1.19%        0.0574            0.0007           0.32%            -0.87%
+
+    Sum of risk contributions = 0.2121 = portfolio volatility 0.2121  (Euler's theorem checks out)
+  [saved] output\07_risk_contributions.png  -- labels show risk share minus dollar share
+
+--- Reading the risk decomposition -- the most useful table here --------------
+Formulas:
+
+    sigma_p = sqrt(w' Sigma w)                    total portfolio risk
+    MRC_i   = (Sigma w)_i / sigma_p               marginal contribution
+    CRC_i   = w_i x MRC_i                         component contribution
+    sum_i CRC_i = sigma_p                         (exact, by Euler)
+
+MRC answers "if I add a dollar of asset i, how much does total portfolio
+volatility rise?". CRC scales that by how much you actually hold, and the CRCs
+sum exactly to total volatility -- so the percentages are a complete,
+exhaustive split of your risk, not an approximation.
+
+YOUR RESULT -- holdings that carry MORE risk than money:
+
+        SMH      22.8% of money  ->   36.5% of risk   (+13.7%)
+        NVDA      5.4% of money  ->    9.6% of risk   (+4.2%)
+        TSLY      8.1% of money  ->   11.7% of risk   (+3.6%)
+
+Holdings that carry LESS risk than money (your genuine diversifiers):
+
+        SPY      25.6% of money  ->   17.1% of risk   (-8.5%)
+        GLD       7.6% of money  ->    2.0% of risk   (-5.6%)
+        VXUS      9.1% of money  ->    5.1% of risk   (-4.0%)
+        VOOG     12.9% of money  ->   11.3% of risk   (-1.6%)
+        GOOGL     7.3% of money  ->    6.4% of risk   (-0.9%)
+        SCHD      1.2% of money  ->    0.3% of risk   (-0.9%)
+
+The top three risk sources overall are SMH, SPY and TSLY, together 65.3% of
+your total risk on 56.5% of your money.
+
+Over-contribution happens on two fronts at once: the holding is individually
+volatile AND highly correlated with the rest of the portfolio, so its moves
+REINFORCE rather than offset your other positions. An asset's risk
+contribution depends on its covariance with the whole portfolio, not on its
+own volatility in isolation -- which is exactly why a volatile asset that
+moves independently (or negatively) can have a small or even negative risk
+contribution, acting as a hedge. Note that a large holding can still be an
+under-contributor if it is the thing everything else is measured against.
+
+DIVERSIFICATION RATIO = 1.237
+    = (weighted avg of individual vols) / (actual portfolio vol)
+    The volatility that imperfect correlation cancelled out for you.
+    1.0 = no benefit whatsoever; higher is better.
+
+EFFECTIVE NUMBER OF ASSETS = 6.13  (from 9 holdings)
+    = 1 / sum(w_i^2), the inverse Herfindahl index.
+    Equal weights across 9 assets would give exactly 9.0.
+    But note this only measures DOLLAR spread -- 9 different S&P 500
+    index funds would also score 9.0 while being one single bet.
+    Read it together with the diversification ratio, which measures
+    whether that spread actually bought you anything.
+
+
+==============================================================================
+  STEP 7  --  ESTIMATION ERROR: THE LOOKBACK SENSITIVITY TEST
+==============================================================================
+
+  1-year window: 252 trading days -- solved.
+  2-year window: 502 trading days -- solved.
+  3-year window: 753 trading days -- solved.
+  [saved] output\08_lookback_sensitivity.png  -- instability here = estimation error, not signal
+
+  Max-Sharpe weights by lookback window:
+
+            1-year   2-year   3-year
+    SPY      0.00%    0.00%    0.00%
+    VOOG     0.00%    0.00%    0.00%
+    SCHD    63.63%   25.07%   29.67%
+    VXUS     0.00%    0.00%    0.00%
+    GLD      0.00%   36.14%   35.66%
+    GOOGL   22.84%   23.96%   19.51%
+    NVDA     0.00%    0.00%   15.16%
+    SMH     13.53%   14.82%    0.00%
+    TSLY     0.00%    0.00%    0.00%
+
+--- This is the single most important output in the file ----------------------
+The same optimizer, the same assets, the same constraints -- the ONLY thing
+that changed is how far back we looked. If mean-variance optimization were
+extracting a durable signal, these columns would be nearly identical.
+
+Largest weight swings across windows:
+
+    SCHD     moves  38.6%  (from  25.1% to  63.6%)
+    GLD      moves  36.1%  (from   0.0% to  36.1%)
+    NVDA     moves  15.2%  (from   0.0% to  15.2%)
+    SMH      moves  14.8%  (from   0.0% to  14.8%)
+    GOOGL    moves   4.5%  (from  19.5% to  24.0%)
+
+None of these windows is more 'correct' than the others. So the differences
+between them are not information -- they are ESTIMATION ERROR being reported
+to two decimal places.
+
+The mechanism: the optimizer maximizes (w'mu - rf)/sqrt(w'Sigma w). It has no
+concept that mu is an estimate with a standard error. An asset that got lucky
+in the sample shows a high mu_i, and the optimizer reads that luck as a
+permanent property and allocates accordingly. Michaud's name for this is
+'error maximization': of all possible portfolios, mean-variance reliably
+selects the one whose inputs are most favorably mis-estimated.
+
+This is why practitioners rarely use raw mean-variance output. The standard
+defenses -- all demonstrated below -- are: shrink the covariance matrix,
+resample the optimization, cap the weights, or abandon expected returns
+entirely and use minimum-variance or risk-parity instead.
+
+
+==============================================================================
+  STEP 8  --  STRETCH GOALS: SHRINKAGE, RESAMPLING, CONSTRAINTS
+==============================================================================
+
+  [Stretch 1] Ledoit-Wolf shrinkage covariance...
+  [saved] output\09_shrinkage_comparison.png  -- shrinkage pulls the frontier toward reality
+
+--- Ledoit-Wolf shrinkage -----------------------------------------------------
+Shrinkage intensity chosen by the estimator: delta = 0.065
+
+That means the covariance matrix used is 6.5% the structured 'constant
+correlation' target and 93.5% the raw sample estimate:
+
+    Sigma_shrunk = delta x F + (1 - delta) x S
+
+where F keeps each asset's own variance but replaces every pairwise
+correlation with the average correlation across all pairs.
+
+A high delta is the estimator telling you your sample covariance is noisy
+relative to how wrong the simple target is. Short windows and many assets both
+push delta up.
+
+Why it helps: with N assets you estimate N(N+1)/2 = 45 covariance parameters
+from 752 observations. The sample matrix's extreme eigenvalues are biased
+outward, and the optimizer effectively INVERTS this matrix -- so the smallest,
+most-biased eigenvalues dominate the result. The optimizer then discovers
+near-riskless-looking combinations that are nothing of the sort out of sample.
+Shrinking pulls those eigenvalues back toward the middle.
+
+Effect on the answer: the max-Sharpe weights moved by 3.3% (one-way turnover).
+The shrunk frontier sits slightly LOWER than the naive one -- which is the
+point. The naive frontier was partly fitted noise; some of that apparent free
+lunch was never real.
+
+
+  [Stretch 2] Resampled frontier (300 bootstraps)...
+  [saved] output\10_resampled_weights.png  -- wide bars = the optimizer is guessing
+
+  Bootstrap distribution of max-Sharpe weights:
+
+               Naive      mean       std       p05       p95
+    Ticker                                                  
+    SPY        0.00%     0.18%     2.09%     0.00%     0.00%
+    VOOG       0.00%     0.29%     2.36%     0.00%     0.00%
+    SCHD      29.67%    26.77%    23.88%     0.00%    67.87%
+    VXUS       0.00%     1.58%     6.36%     0.00%    10.95%
+    GLD       35.66%    30.75%    21.82%     0.00%    69.47%
+    GOOGL     19.51%    18.41%    17.93%     0.00%    53.16%
+    NVDA      15.16%    13.05%    14.47%     0.00%    43.36%
+    SMH        0.00%     8.41%    15.44%     0.00%    40.79%
+    TSLY       0.00%     0.56%     2.08%     0.00%     4.84%
+
+--- The resampled portfolio -- estimation error, measured ---------------------
+We drew 300 bootstrap samples from your own return history (sampling days with
+replacement), recomputed mu and Sigma from each, and re-solved for max Sharpe
+every time.
+
+The point is the SPREAD, not the average. Widest 90% intervals:
+
+    GLD        0.0% to  69.5%    (naive answer:  35.7%)
+    SCHD       0.0% to  67.9%    (naive answer:  29.7%)
+    GOOGL      0.0% to  53.2%    (naive answer:  19.5%)
+    NVDA       0.0% to  43.4%    (naive answer:  15.2%)
+    SMH        0.0% to  40.8%    (naive answer:   0.0%)
+
+Read those intervals carefully. If an asset's optimal weight ranges from near
+zero to a large allocation depending on which days happened to be drawn, then
+the naive optimizer's confident-looking point estimate carries almost no
+information. Nothing about your actual portfolio changed between bootstraps --
+only which random subset of history the optimizer saw.
+
+The AVERAGE of the resampled weights is itself a usable portfolio (Michaud's
+resampled efficiency):
+
+    return 31.26%   vol 16.28%   Sharpe 1.656
+    effective N = 4.45  vs  3.62 for the naive optimum
+
+It is almost always more diversified, because an asset that only wins under
+some resamples receives a partial allocation instead of an all-or-nothing one.
+Its in-sample Sharpe is lower than the naive optimum's by construction -- but
+the naive optimum's in-sample Sharpe is precisely the number that does not
+survive contact with the future.
+
+
+  [Stretch 3] Weight cap at 25% per asset...
+  [saved] output\11_weight_cap_comparison.png  -- a cap trades a little in-sample Sharpe for realism
+
+--- Position limits: the practitioner's blunt instrument ----------------------
+Adding 0 <= w_i <= 25% to the same optimization:
+
+    Unconstrained ... Sharpe 1.690   max weight 35.7%   effective N 3.62
+    Capped .......... Sharpe 1.646   max weight 25.0%   effective N 4.53
+
+The capped portfolio has a lower IN-SAMPLE Sharpe -- it must, since it is
+solving the same problem with strictly fewer options. The in-sample loss is
+0.044 Sharpe points.
+
+But that framing has it backwards. The unconstrained solution's extra Sharpe
+came from concentrating in whichever assets had the most favorably mis-
+estimated inputs. The cap prevents the optimizer from acting on estimates it
+has no right to be confident about. Jorion and others have shown empirically
+that constrained mean-variance portfolios routinely BEAT unconstrained ones
+out of sample, despite being strictly worse in sample.
+
+A weight cap is a crude, effective form of the same regularization that
+shrinkage and resampling achieve more elegantly -- and it is the one that
+shows up in nearly every real investment policy statement.
+
+
+==============================================================================
+  STEP 9  --  CAVEATS YOU SHOULD CARRY OUT OF THIS EXERCISE
+==============================================================================
+
+--- What this model cannot tell you -------------------------------------------
+1. GARBAGE IN, GARBAGE OUT -- and mu is the garbage.
+   Expected returns estimated from 3.0 years of daily data have
+   enormous standard errors. For an asset with 30% annual volatility,
+   the standard error of the estimated annual mean over 3 years is about
+   30%/sqrt(3) ~ 17 percentage points. You cannot distinguish a 5%
+   expected return from a 25% one at that precision. The optimizer does
+   not know this and will act as though every mu_i is exact.
+
+2. SHORT HISTORY: WQTM -- excluded from the model entirely by HISTORY_POLICY, having only 0.8 years of history.
+   An asset with little history has unreliable means, variances, and --
+   worst of all -- unreliable correlations with everything else.
+   Correlation estimates need a lot of data to stabilize, and a wrong
+   correlation is more damaging than a wrong mean, because it propagates
+   through every cross term of w' Sigma w rather than affecting one
+   entry. Treat the optimizer's opinion about such holdings as close to
+   uninformative. Note that an EXCLUDED asset is not a solved problem
+   either: you still own it, so the risk figures above describe only the
+   part of your portfolio the model could see.
+
+3. TSLY IS STRUCTURALLY UNUSUAL.
+   It is a covered-call fund: it sells TSLA upside for option premium
+   and distributes the proceeds. Three consequences the model cannot
+   see: (a) its return distribution is deliberately ASYMMETRIC -- capped
+   upside, largely uncapped downside -- so a mean and a variance do not
+   describe it; (b) its economics depend on option-implied volatility
+   levels that vary hugely over time, so its historical risk/return does
+   not extrapolate; (c) its correlation to TSLA is nonlinear and
+   regime-dependent. Even with correct total-return data, mean-variance
+   is the wrong lens for this holding.
+
+4. VARIANCE IS NOT RISK.
+   Mean-variance assumes a mean and a variance fully describe a return
+   distribution -- i.e. approximate normality. Real returns have fat
+   tails (crashes occur far more often than a normal distribution
+   permits) and negative skew (drops are larger than rallies). Variance
+   also penalizes upside deviation exactly as much as downside, which no
+   investor actually does. Alternatives that address this include
+   semivariance, CVaR, and drawdown-based optimization.
+
+5. THE PAST IS NOT THE FUTURE.
+   Correlations are not constant -- they famously spike toward 1 during
+   crises, exactly when diversification is most needed. A portfolio
+   optimized on a calm period can be far less diversified than it looks
+   the moment it matters.
+
+6. NO COSTS, NO TAXES, NO CONSTRAINTS.
+   This ignores transaction costs, bid-ask spreads, and (importantly for
+   a taxable Robinhood account) capital gains tax on rebalancing. The
+   gap between your portfolio and the frontier is not free money -- it
+   is a gross figure before all of those.
+
+WHAT TO ACTUALLY TAKE FROM THIS: The ROBUST findings are the ones that depend
+on covariances rather than means -- your risk concentration, your
+diversification ratio, your effective N, and which holdings are redundant with
+each other. Those are estimated far more reliably and they answer the question
+you actually asked: how diversified am I really?
+
+The FRAGILE finding is the exact optimal weight vector. Read it as a
+description of what happened to work in this specific window, not as a target.
+
+
+==============================================================================
+  STEP 10  --  WRITING THE SUMMARY
+==============================================================================
+  [saved] SUMMARY.md -- written interpretation of these results

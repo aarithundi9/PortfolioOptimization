@@ -1,0 +1,9 @@
+# Markowitz Mean-Variance Portfolio Optimization
+# Python 3.12+  |  install with:  pip install -r requirements.txt
+
+yfinance>=0.2.40      # price data (auto-adjusted / total-return closes)
+numpy>=1.26           # linear algebra: w'Sw, matrix ops
+pandas>=2.2           # time-series alignment, returns, covariance
+scipy>=1.13           # scipy.optimize.minimize (SLSQP) for the constrained optimizer
+matplotlib>=3.8       # all figures
+seaborn>=0.13         # correlation / covariance heatmaps
